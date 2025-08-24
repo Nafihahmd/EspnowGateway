@@ -22,6 +22,7 @@
 
 // #include "driver/usb_serial_jtag.h"   // USB Serial/JTAG driver API (install/read/write)
 #include "espnow_example.h"
+#include "nvs_helper.h"
 
 static const char *TAG = "espnow_gateway";
 static QueueHandle_t s_usb_line_q = NULL;
@@ -214,6 +215,7 @@ void espnow_register_cmd_handler(const char *json) {
                         memcpy(peer.lmk, CONFIG_ESPNOW_LMK, ESP_NOW_KEY_LEN);
                         memcpy(peer.peer_addr, target, ESP_NOW_ETH_ALEN);
                         ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+                        nvs_store_peer_mac(target);
                     }
                     cJSON *o = cJSON_CreateObject();
                     cJSON_AddStringToObject(o, "type", "register_ack");
@@ -529,6 +531,24 @@ esp_err_t espnow_init(void)
     memcpy(peer.peer_addr, s_broadcast_mac, ESP_NOW_ETH_ALEN);
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
+    // Get all stored peers (using the additional function)
+    uint8_t all_macs[MAX_PEERS][6];
+    size_t peer_count = MAX_PEERS;
+    if (nvs_get_all_peers(all_macs, &peer_count) == ESP_OK) {
+        for (int i = 0; i < peer_count; i++) {
+            memset(&peer, 0, sizeof(esp_now_peer_info_t));
+            peer.channel = CONFIG_ESPNOW_CHANNEL;
+            peer.ifidx = ESPNOW_WIFI_IF;
+            peer.encrypt = true;
+            memcpy(peer.lmk, CONFIG_ESPNOW_LMK, ESP_NOW_KEY_LEN);
+            memcpy(peer.peer_addr, all_macs[i], ESP_NOW_ETH_ALEN);
+            ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+            ESP_LOGI(TAG, "Peer %d: %02X:%02X:%02X:%02X:%02X:%02X", 
+                    i, all_macs[i][0], all_macs[i][1], all_macs[i][2], 
+                    all_macs[i][3], all_macs[i][4], all_macs[i][5]);
+        }
+    }
+
     /* Initialize sending parameters. */
     send_param = malloc(sizeof(espnow_send_param_t));
     if (send_param == NULL) {
@@ -588,7 +608,8 @@ esp_err_t espnow_send_data(const uint8_t *mac_addr, const uint8_t *data, uint16_
 void app_main(void) {
     ESP_LOGI(TAG, "Gateway (USB Serial/JTAG) starting...");
 
-    ESP_ERROR_CHECK(nvs_flash_init());
+    // ESP_ERROR_CHECK(nvs_flash_init());
+    nvs_init();
 
     // get gateway MAC (for replies)
     // esp_efuse_mac_get_default(s_my_mac);    
