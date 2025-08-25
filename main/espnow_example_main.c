@@ -88,32 +88,34 @@ static void usb_line_task(void *arg) {
             cJSON *root = cJSON_Parse(line);
             if (root) {
                 cJSON *macj = cJSON_GetObjectItem(root, "mac");
-                cJSON *cmd  = cJSON_GetObjectItem(root, "cmd");
-                if (cJSON_IsString(macj) && cJSON_IsString(cmd)) {
+                cJSON *type  = cJSON_GetObjectItem(root, "type");
+                if (cJSON_IsString(macj) && cJSON_IsString(type)) {
                     uint8_t target[6];
                     mac_from_str(macj->valuestring, target);
                     if (memcmp(target, "\0\0\0\0\0\0", 6) == 0) {
                         ESP_LOGW(TAG, "Invalid target MAC from Node-RED");
                     } else {
-                        if (strcmp(cmd->valuestring, "query_config") == 0) {
+                        ESP_LOGI(TAG, "Valid MAC");
+                        if (strcmp(type->valuestring, "get_config") == 0) {
                             cJSON *o = cJSON_CreateObject();
                             cJSON_AddStringToObject(o, "type", "config_request");
                             // char *s = cJSON_PrintUnformatted(o);
                             espnow_send_json(target, o);
                             // cJSON_free(s);
                             cJSON_Delete(o);
-                        } else if (strcmp(cmd->valuestring, "set_config") == 0) {
-                            cJSON *pl = cJSON_GetObjectItem(root, "payload");
-                            if (pl) {
+                        } else if (strcmp(type->valuestring, "set_config") == 0) {
+                            cJSON *cfg = cJSON_GetObjectItem(root, "configurations");
+                        ESP_LOGI(TAG, "Set Config");
+                            if (cfg) {
                                 cJSON *o = cJSON_CreateObject();
                                 cJSON_AddStringToObject(o, "type", "set_config");
-                                cJSON_AddItemToObject(o, "payload", cJSON_Duplicate(pl, 1));
+                                cJSON_AddItemToObject(o, "configurations", cJSON_Duplicate(cfg, 1));
                                 // char *s = cJSON_PrintUnformatted(o);
                                 espnow_send_json(target, o);
                                 // cJSON_free(s);
                                 cJSON_Delete(o);
                             }
-                        } else if (strcmp(cmd->valuestring, "unicast_json") == 0) {
+                        } else if (strcmp(type->valuestring, "forward") == 0) {
                             cJSON *pl = cJSON_GetObjectItem(root, "payload");
                             if (pl) {
                                 // char *s = cJSON_PrintUnformatted(pl);
@@ -121,7 +123,7 @@ static void usb_line_task(void *arg) {
                                 // cJSON_free(s);
                             }
                         } else {
-                            ESP_LOGW(TAG, "Unknown cmd from Node-RED: %s", cmd->valuestring);
+                            ESP_LOGW(TAG, "Unknown type from Node-RED: %s", type->valuestring);
                         }
                     }
                 } else {
@@ -449,6 +451,7 @@ static void espnow_task(void *pvParameter)
 /* API to send JSON data */
 esp_err_t espnow_send_json(const uint8_t *mac_addr, cJSON *json)
 {
+    ESP_LOGI(TAG, "espnow_send_json");
     if (!json) {
         ESP_LOGE(TAG, "Invalid JSON object");
         return ESP_FAIL;
