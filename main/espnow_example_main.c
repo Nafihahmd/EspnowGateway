@@ -606,10 +606,32 @@ esp_err_t espnow_send_data(const uint8_t *mac_addr, const uint8_t *data, uint16_
     free(send_param.buffer);
     return err;
 }
-
-
+#include "driver/gpio.h"
+#define WIFI_ENABLE      3   // GPIO3 (RF ANTENNA SWITCH EN)
+#define WIFI_ANT_CONFIG  14  // GPIO14
 void app_main(void) {
     ESP_LOGI(TAG, "Gateway (USB Serial/JTAG) starting...");
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << WIFI_ENABLE),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    // Configure WIFI_ANT_CONFIG (GPIO14) as output
+    io_conf.pin_bit_mask = (1ULL << WIFI_ANT_CONFIG);
+    gpio_config(&io_conf);
+
+    // Set WIFI_ENABLE = LOW  (Activate RF switch control)
+    gpio_set_level(WIFI_ENABLE, 0);
+
+    // Delay 100 ms
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Set WIFI_ANT_CONFIG = HIGH (Use external antenna)
+    gpio_set_level(WIFI_ANT_CONFIG, 1);
 
     // ESP_ERROR_CHECK(nvs_flash_init());
     nvs_init();
