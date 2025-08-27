@@ -115,7 +115,11 @@ static void usb_line_task(void *arg) {
                                 // cJSON_free(s);
                                 cJSON_Delete(o);
                             }
-                        } else if (strcmp(type->valuestring, "forward") == 0) {
+                        } else if (strcmp(type->valuestring, "system_reset") == 0) {
+                            ESP_LOGW(TAG, "Sending system_reset to node");
+                            espnow_send_json(target, root);
+                        }
+                        else if (strcmp(type->valuestring, "forward") == 0) {
                             cJSON *pl = cJSON_GetObjectItem(root, "payload");
                             if (pl) {
                                 // char *s = cJSON_PrintUnformatted(pl);
