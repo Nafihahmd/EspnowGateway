@@ -607,10 +607,15 @@ esp_err_t espnow_send_data(const uint8_t *mac_addr, const uint8_t *data, uint16_
     return err;
 }
 #include "driver/gpio.h"
+#ifdef CONFIG_IDF_TARGET_ESP32C6
 #define WIFI_ENABLE      3   // GPIO3 (RF ANTENNA SWITCH EN)
 #define WIFI_ANT_CONFIG  14  // GPIO14
+#endif
+
 void app_main(void) {
     ESP_LOGI(TAG, "Gateway (USB Serial/JTAG) starting...");
+
+#ifdef CONFIG_IDF_TARGET_ESP32C6
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << WIFI_ENABLE),
         .mode = GPIO_MODE_OUTPUT,
@@ -632,7 +637,7 @@ void app_main(void) {
 
     // Set WIFI_ANT_CONFIG = HIGH (Use external antenna)
     gpio_set_level(WIFI_ANT_CONFIG, 1);
-
+#endif
     // ESP_ERROR_CHECK(nvs_flash_init());
     nvs_init();
 
