@@ -18,6 +18,7 @@
 #include "esp_mac.h"
 #include "esp_crc.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/uart.h"
 #include "cJSON.h"
 
 // #include "driver/usb_serial_jtag.h"   // USB Serial/JTAG driver API (install/read/write)
@@ -29,6 +30,62 @@ static QueueHandle_t s_usb_line_q = NULL;
 
 #define USB_LINE_MAX    1024
 #define USB_QUEUE_LEN   8
+
+
+static const int RX_BUF_SIZE = 1024;
+
+#define TXD_PIN (CONFIG_EXAMPLE_UART_TXD)
+#define RXD_PIN (CONFIG_EXAMPLE_UART_RXD)
+
+void init_uart(void)
+{
+    const uart_config_t uart_config = {
+        .baud_rate = CONFIG_EXAMPLE_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    // We won't use a buffer for sending data.
+    uart_driver_install(UART_NUM_0, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
+    uart_param_config(UART_NUM_0, &uart_config);
+    uart_set_pin(UART_NUM_0, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+}
+
+int sendData(const char* logName, const char* data)
+{
+    const int len = strlen(data);
+    const int txBytes = uart_write_bytes(UART_NUM_0, data, len);
+    ESP_LOGI(logName, "Wrote %d bytes", txBytes);
+    return txBytes;
+}
+
+static void tx_task(void *arg)
+{
+    static const char *TX_TASK_TAG = "TX_TASK";
+    esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
+    while (1) {
+        sendData(TX_TASK_TAG, "Hello world");
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+}
+
+static void rx_task(void *arg)
+{
+    static const char *RX_TASK_TAG = "RX_TASK";
+    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
+    uint8_t* data = (uint8_t*) malloc(RX_BUF_SIZE + 1);
+    while (1) {
+        const int rxBytes = uart_read_bytes(UART_NUM_0, data, RX_BUF_SIZE, 1000 / portTICK_PERIOD_MS);
+        if (rxBytes > 0) {
+            data[rxBytes] = 0;
+            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
+            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
+        }
+    }
+    free(data);
+}
 
 static void mac_from_str(const char *s, uint8_t *mac) {
     unsigned int b[6] = {0};
@@ -52,7 +109,7 @@ static void usb_reader_task(void *arg) {
 
     while (1) {
         if (!usb_serial_jtag_is_connected()) {
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
         }
         int r = usb_serial_jtag_read_bytes(buf, sizeof(buf), pdMS_TO_TICKS(500));
@@ -383,13 +440,13 @@ static void espnow_task(void *pvParameter)
                                 cJSON *root = cJSON_Parse(json_str);
                                 if (root) {
                                     char *printed = cJSON_PrintUnformatted(root);
-                                    // ESP_LOGI(TAG, "Received JSON: %s", printed);
+                                    ESP_LOGI(TAG, "Received JSON: %s", printed);
                                     // write to host via usb_serial_jtag
                                     if (usb_serial_jtag_is_connected()) {
-                                        printf("%s\n",(const char*)printed);
-                                        // usb_serial_jtag_write_bytes("\n", 1);
+                                        usb_serial_jtag_write_bytes((const uint8_t *)printed, strlen(printed), 20 / portTICK_PERIOD_MS);
+                                        usb_serial_jtag_write_bytes((const uint8_t *)"\r\n", 2, 20 / portTICK_PERIOD_MS);
                                         // flush: wait short time for TX to finish
-                                        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+                                        // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
                                     espnow_register_cmd_handler(printed);
                                     free(printed);
@@ -419,13 +476,13 @@ static void espnow_task(void *pvParameter)
                                 cJSON *root = cJSON_Parse(json_str);
                                 if (root) {
                                     char *printed = cJSON_PrintUnformatted(root);
-                                    // ESP_LOGI(TAG, "Received JSON: %s", printed);
+                                    ESP_LOGI(TAG, "Received JSON: %s", printed);
                                     // write to host via usb_serial_jtag
-                                    if (usb_serial_jtag_is_connected()) {
-                                        printf("%s\n",(const char*)printed);
-                                        // usb_serial_jtag_write_bytes("\n", 1);
+                                    if (usb_serial_jtag_is_connected()) {                                        
+                                        usb_serial_jtag_write_bytes((const uint8_t *)printed, strlen(printed), 20 / portTICK_PERIOD_MS);
+                                        usb_serial_jtag_write_bytes((const uint8_t *)"\r\n", 2, 20 / portTICK_PERIOD_MS);
                                         // flush: wait short time for TX to finish
-                                        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+                                        // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
                                     // espnow_register_cmd_handler(printed);
                                     free(printed);
@@ -660,6 +717,7 @@ void app_main(void) {
 
     // init wifi
     wifi_init();
+    init_uart();
     // install usb_serial_jtag driver
     usb_serial_jtag_driver_config_t usb_cfg = {
         .tx_buffer_size = 4096,
@@ -671,6 +729,8 @@ void app_main(void) {
     xTaskCreate(usb_reader_task, "usb_reader", 4096, NULL, 5, NULL);
     xTaskCreate(usb_line_task, "usb_line", 4096, NULL, 5, NULL);
     espnow_init();
-
+    
+    xTaskCreate(rx_task, "uart_rx_task", CONFIG_EXAMPLE_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 1, NULL);
+    // xTaskCreate(tx_task, "uart_tx_task", CONFIG_EXAMPLE_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 2, NULL);
     ESP_LOGI(TAG, "Gateway ready. USB Serial/JTAG should enumerate on host.");
 }
