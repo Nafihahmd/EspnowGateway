@@ -98,6 +98,7 @@ static void mac_from_str(const char *s, uint8_t *mac) {
 }
 
 esp_err_t espnow_send_json(const uint8_t *mac_addr, cJSON *json);
+#ifdef CONFIG_IDF_TARGET_ESP32C6
 /* USB Serial/JTAG line assembler task.
    Reads raw bytes from usb_serial_jtag_read_bytes and splits into newline-terminated lines.
    Puts malloc'd line pointers into s_usb_line_q for processing by usb_line_task.
@@ -199,6 +200,98 @@ static void usb_line_task(void *arg) {
         }
     }
 }
+#else
+static void uart_reader_task(void *arg) {
+    uint8_t buf[256];
+    char line[USB_LINE_MAX];
+    size_t idx = 0;
+
+    while (1) {
+        int r = uart_read_bytes(UART_NUM_0, buf, sizeof(buf), pdMS_TO_TICKS(500));
+        if (r > 0) {
+            for (int i = 0; i < r; ++i) {
+                char c = (char)buf[i];
+                if (c == '\n' || c == '\r') {
+                    if (idx == 0) continue;
+                    line[idx] = 0;
+                    char *copy = strdup(line);
+                    if (copy) {
+                        if (xQueueSend(s_usb_line_q, &copy, pdMS_TO_TICKS(10)) != pdTRUE) {
+                            free(copy);
+                        }
+                    }
+                    idx = 0;
+                } else {
+                    if (idx < (USB_LINE_MAX - 1)) line[idx++] = c;
+                    else idx = 0; // overflow, drop line
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+static void uart_line_task(void *arg) {
+    char *line = NULL;
+    while (1) {
+        if (xQueueReceive(s_usb_line_q, &line, portMAX_DELAY) == pdTRUE && line != NULL) {
+            ESP_LOGI(TAG, "UART RX: %s", line);
+            cJSON *root = cJSON_Parse(line);
+            if (root) {
+                cJSON *macj = cJSON_GetObjectItem(root, "mac");
+                cJSON *type  = cJSON_GetObjectItem(root, "type");
+                if (cJSON_IsString(macj) && cJSON_IsString(type)) {
+                    uint8_t target[6];
+                    mac_from_str(macj->valuestring, target);
+                    if (memcmp(target, "\0\0\0\0\0\0", 6) == 0) {
+                        ESP_LOGW(TAG, "Invalid target MAC from Node-RED");
+                    } else {
+                        ESP_LOGI(TAG, "Valid MAC");
+                        if (strcmp(type->valuestring, "get_config") == 0) {
+                            cJSON *o = cJSON_CreateObject();
+                            cJSON_AddStringToObject(o, "type", "config_request");
+                            espnow_send_json(target, o);
+                            cJSON_Delete(o);
+                        } else if (strcmp(type->valuestring, "set_config") == 0) {
+                            cJSON *cfg = cJSON_GetObjectItem(root, "configurations");
+                        ESP_LOGI(TAG, "Set Config");
+                            if (cfg) {
+                                cJSON *o = cJSON_CreateObject();
+                                cJSON_AddStringToObject(o, "type", "set_config");
+                                cJSON_AddItemToObject(o, "configurations", cJSON_Duplicate(cfg, 1));
+                                // char *s = cJSON_PrintUnformatted(o);
+                                espnow_send_json(target, o);
+                                // cJSON_free(s);
+                                cJSON_Delete(o);
+                            }
+                        } else if (strcmp(type->valuestring, "system_reset") == 0) {
+                            ESP_LOGW(TAG, "Sending system_reset to node");
+                            espnow_send_json(target, root);
+                        }
+                        else if (strcmp(type->valuestring, "forward") == 0) {
+                            cJSON *pl = cJSON_GetObjectItem(root, "payload");
+                            if (pl) {
+                                // char *s = cJSON_PrintUnformatted(pl);
+                                espnow_send_json(target, pl);
+                                // cJSON_free(s);
+                            }
+                        } else {
+                            ESP_LOGW(TAG, "Unknown type from Node-RED: %s", type->valuestring);
+                        }
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Invalid command JSON from Node-RED");
+                }
+                cJSON_Delete(root);
+            } else {
+                ESP_LOGW(TAG, "Failed to parse JSON from Node-RED");
+            }
+            free(line);
+            line = NULL;
+        }
+    }
+}
+#endif
 uint8_t s_my_mac[6];
 uint8_t s_broadcast_mac[ESP_NOW_ETH_ALEN] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 uint8_t s_gateway_mac[6];
@@ -441,6 +534,7 @@ static void espnow_task(void *pvParameter)
                                 if (root) {
                                     char *printed = cJSON_PrintUnformatted(root);
                                     ESP_LOGI(TAG, "Received JSON: %s", printed);
+                                    #ifdef CONFIG_IDF_TARGET_ESP32C6
                                     // write to host via usb_serial_jtag
                                     if (usb_serial_jtag_is_connected()) {
                                         usb_serial_jtag_write_bytes((const uint8_t *)printed, strlen(printed), 20 / portTICK_PERIOD_MS);
@@ -448,6 +542,8 @@ static void espnow_task(void *pvParameter)
                                         // flush: wait short time for TX to finish
                                         // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
+                                    #else
+                                    #endif
                                     espnow_register_cmd_handler(printed);
                                     free(printed);
                                     cJSON_Delete(root);
@@ -478,12 +574,14 @@ static void espnow_task(void *pvParameter)
                                     char *printed = cJSON_PrintUnformatted(root);
                                     ESP_LOGI(TAG, "Received JSON: %s", printed);
                                     // write to host via usb_serial_jtag
+                                    #ifdef CONFIG_IDF_TARGET_ESP32C6
                                     if (usb_serial_jtag_is_connected()) {                                        
                                         usb_serial_jtag_write_bytes((const uint8_t *)printed, strlen(printed), 20 / portTICK_PERIOD_MS);
                                         usb_serial_jtag_write_bytes((const uint8_t *)"\r\n", 2, 20 / portTICK_PERIOD_MS);
                                         // flush: wait short time for TX to finish
                                         // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
+                                    #endif
                                     // espnow_register_cmd_handler(printed);
                                     free(printed);
                                     cJSON_Delete(root);
@@ -671,6 +769,8 @@ esp_err_t espnow_send_data(const uint8_t *mac_addr, const uint8_t *data, uint16_
 #ifdef CONFIG_IDF_TARGET_ESP32C6
 #define WIFI_ENABLE      3   // GPIO3 (RF ANTENNA SWITCH EN)
 #define WIFI_ANT_CONFIG  14  // GPIO14
+#else
+#define LED_ONBOARD 18
 #endif
 
 void app_main(void) {
@@ -698,6 +798,18 @@ void app_main(void) {
 
     // Set WIFI_ANT_CONFIG = HIGH (Use external antenna)
     gpio_set_level(WIFI_ANT_CONFIG, 1);
+#else
+ gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << LED_ONBOARD),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+
+    // Set LED_ONBOARD = LOW  (Activate RF switch control)
+    gpio_set_level(LED_ONBOARD, 1);
 #endif
     // ESP_ERROR_CHECK(nvs_flash_init());
     nvs_init();
@@ -708,16 +820,18 @@ void app_main(void) {
     char mymac[18]; mac_to_str(s_my_mac, mymac, sizeof(mymac));
     ESP_LOGI(TAG, "Gateway MAC: %s", mymac);
 
+
+    // init wifi
+    wifi_init();
+    init_uart();
     // create queue for incoming USB lines
     s_usb_line_q = xQueueCreate(USB_QUEUE_LEN, sizeof(char *));
     if (!s_usb_line_q) {
         ESP_LOGE(TAG, "failed to create usb line queue");
         return;
     }
-
-    // init wifi
-    wifi_init();
-    init_uart();
+#ifdef CONFIG_IDF_TARGET_ESP32C6
+    
     // install usb_serial_jtag driver
     usb_serial_jtag_driver_config_t usb_cfg = {
         .tx_buffer_size = 4096,
@@ -728,9 +842,12 @@ void app_main(void) {
     // start reader and processor tasks
     xTaskCreate(usb_reader_task, "usb_reader", 4096, NULL, 5, NULL);
     xTaskCreate(usb_line_task, "usb_line", 4096, NULL, 5, NULL);
+#else
+    // create queue for incoming UART lines
+    xTaskCreate(uart_reader_task, "uart_reader", 8192, NULL, 5, NULL);
+    xTaskCreate(uart_line_task, "uart_line", 8192, NULL, 5, NULL);
+#endif
     espnow_init();
-    
-    xTaskCreate(rx_task, "uart_rx_task", CONFIG_EXAMPLE_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 1, NULL);
-    // xTaskCreate(tx_task, "uart_tx_task", CONFIG_EXAMPLE_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 2, NULL);
+
     ESP_LOGI(TAG, "Gateway ready. USB Serial/JTAG should enumerate on host.");
 }
