@@ -53,39 +53,39 @@ void init_uart(void)
     uart_set_pin(UART_NUM_0, TXD_PIN, RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
-int sendData(const char* logName, const char* data)
-{
-    const int len = strlen(data);
-    const int txBytes = uart_write_bytes(UART_NUM_0, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes", txBytes);
-    return txBytes;
-}
+// int sendData(const char* logName, const char* data)
+// {
+//     const int len = strlen(data);
+//     const int txBytes = uart_write_bytes(UART_NUM_0, data, len);
+//     ESP_LOGI(logName, "Wrote %d bytes", txBytes);
+//     return txBytes;
+// }
 
-static void tx_task(void *arg)
-{
-    static const char *TX_TASK_TAG = "TX_TASK";
-    esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
-    while (1) {
-        sendData(TX_TASK_TAG, "Hello world");
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
-    }
-}
+// static void tx_task(void *arg)
+// {
+//     static const char *TX_TASK_TAG = "TX_TASK";
+//     esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
+//     while (1) {
+//         sendData(TX_TASK_TAG, "Hello world");
+//         vTaskDelay(2000 / portTICK_PERIOD_MS);
+//     }
+// }
 
-static void rx_task(void *arg)
-{
-    static const char *RX_TASK_TAG = "RX_TASK";
-    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
-    uint8_t* data = (uint8_t*) malloc(RX_BUF_SIZE + 1);
-    while (1) {
-        const int rxBytes = uart_read_bytes(UART_NUM_0, data, RX_BUF_SIZE, 1000 / portTICK_PERIOD_MS);
-        if (rxBytes > 0) {
-            data[rxBytes] = 0;
-            ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
-        }
-    }
-    free(data);
-}
+// static void rx_task(void *arg)
+// {
+//     static const char *RX_TASK_TAG = "RX_TASK";
+//     esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
+//     uint8_t* data = (uint8_t*) malloc(RX_BUF_SIZE + 1);
+//     while (1) {
+//         const int rxBytes = uart_read_bytes(UART_NUM_0, data, RX_BUF_SIZE, 1000 / portTICK_PERIOD_MS);
+//         if (rxBytes > 0) {
+//             data[rxBytes] = 0;
+//             ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
+//             ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
+//         }
+//     }
+//     free(data);
+// }
 
 static void mac_from_str(const char *s, uint8_t *mac) {
     unsigned int b[6] = {0};
@@ -230,10 +230,11 @@ static void uart_reader_task(void *arg) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
-
+/* uart_line_task: processes completed JSON lines from Node-RED */
 static void uart_line_task(void *arg) {
     char *line = NULL;
     while (1) {
+        ESP_LOGI(TAG, "Waiting for UART line...");
         if (xQueueReceive(s_usb_line_q, &line, portMAX_DELAY) == pdTRUE && line != NULL) {
             ESP_LOGI(TAG, "UART RX: %s", line);
             cJSON *root = cJSON_Parse(line);
@@ -415,7 +416,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *
 {
     espnow_event_t evt;
     espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
-
+    ESP_LOGD(TAG, "espnow_recv_cb called, len=%d", len);
     if (recv_info->src_addr == NULL || data == NULL || len <= 0) {
         ESP_LOGE(TAG, "Receive cb arg error");
         return;
@@ -514,6 +515,7 @@ static void espnow_task(void *pvParameter)
             case ESPNOW_RECV_CB:
             {
                 espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
+                ESP_LOGD(TAG, "Received data len: %d", recv_cb->data_len);
                 
                 if (espnow_data_parse(recv_cb->data, recv_cb->data_len, &data_type) == 0) {
                     espnow_data_t *buf = (espnow_data_t *)recv_cb->data;
@@ -543,6 +545,9 @@ static void espnow_task(void *pvParameter)
                                         // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
                                     #else
+                                    // write to host via uart
+                                    uart_write_bytes(UART_NUM_0, printed, strlen(printed));
+                                    uart_write_bytes(UART_NUM_0, "\r\n", 2);
                                     #endif
                                     espnow_register_cmd_handler(printed);
                                     free(printed);
@@ -558,7 +563,7 @@ static void espnow_task(void *pvParameter)
                     } else if (data_type == ESPNOW_DATA_UNICAST) {                                            
                         // espnow_data_t *buf = (espnow_data_t *)recv_cb->data;
                         // int payload_len = recv_cb->data_len - sizeof(espnow_data_t);
-                        ESP_LOGI(TAG, "Receive unicast data from: "MACSTR", len: %d", 
+                        ESP_LOGD(TAG, "Receive unicast data from: "MACSTR", len: %d", 
                                  MAC2STR(recv_cb->mac_addr), recv_cb->data_len);
                         
                         if (payload_len > 0) {
@@ -572,7 +577,7 @@ static void espnow_task(void *pvParameter)
                                 cJSON *root = cJSON_Parse(json_str);
                                 if (root) {
                                     char *printed = cJSON_PrintUnformatted(root);
-                                    ESP_LOGI(TAG, "Received JSON: %s", printed);
+                                    ESP_LOGD(TAG, "Received JSON: %s", printed);
                                     // write to host via usb_serial_jtag
                                     #ifdef CONFIG_IDF_TARGET_ESP32C6
                                     if (usb_serial_jtag_is_connected()) {                                        
@@ -581,7 +586,13 @@ static void espnow_task(void *pvParameter)
                                         // flush: wait short time for TX to finish
                                         // usb_serial_jtag_wait_tx_done(20 / portTICK_PERIOD_MS);
                                     }
+                                    #else
+                                    // write to host via uart
+                                    ESP_LOGD(TAG, "Writing to UART");
+                                    uart_write_bytes(UART_NUM_0, printed, strlen(printed));
+                                    uart_write_bytes(UART_NUM_0, "\r\n", 2);
                                     #endif
+
                                     // espnow_register_cmd_handler(printed);
                                     free(printed);
                                     cJSON_Delete(root);
@@ -823,7 +834,9 @@ void app_main(void) {
 
     // init wifi
     wifi_init();
-    init_uart();
+#ifndef CONFIG_IDF_TARGET_ESP32C6
+    // init_uart();
+#endif
     // create queue for incoming USB lines
     s_usb_line_q = xQueueCreate(USB_QUEUE_LEN, sizeof(char *));
     if (!s_usb_line_q) {
@@ -843,6 +856,7 @@ void app_main(void) {
     xTaskCreate(usb_reader_task, "usb_reader", 4096, NULL, 5, NULL);
     xTaskCreate(usb_line_task, "usb_line", 4096, NULL, 5, NULL);
 #else
+    init_uart();
     // create queue for incoming UART lines
     xTaskCreate(uart_reader_task, "uart_reader", 8192, NULL, 5, NULL);
     xTaskCreate(uart_line_task, "uart_line", 8192, NULL, 5, NULL);
